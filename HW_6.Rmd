@@ -31,33 +31,180 @@ scale_fill_discrete = scale_fill_viridis_d
 * Create a city_state variable (e.g. “Baltimore, MD”), and a binary variable indicating whether the homicide is solved. Omit cities Dallas, TX; Phoenix, AZ; and Kansas City, MO – these don’t report victim race. Also omit Tulsa, AL – this is a data entry mistake. For this problem, limit your analysis those for whom victim_race is white or black. Be sure that victim_age is numeric.
 
 ```{r}
-homicide = homicide_df |>
-  mutate(city_state = paste0(city,", ",state),
-         solved = ifelse(disposition == "Closed by arrest",1,0)) |>
-  filter(!city_state %in% c("Dallas, TX", "Phoenix, AZ", "Kansas City, MO",
-                            "Tulsa, AL")) |>
-  filter(victim_race %in% c("White", "Black")) |>
-  mutate(victim_age = as.numeric(victim_age))
-
-
-homicide_df 
+homicide_df = 
+  read_csv("./homicide-data.csv", na = c("", "NA", "Unknown")) %>% 
+  mutate(city_state = str_c(city, state, sep = ", ")) %>% 
+  mutate(solved = ifelse(disposition == "Closed by arrest",1,0)) %>% 
+  mutate(victim_age = as.numeric(victim_age)) %>% 
+  filter(!city_state %in% c("Dallas, TX", "Phoenix, AZ", "Kansas City, MO","Tulsa, AL"), 
+         (victim_race %in% c("White", "Black")))
 ```
 
-*For the city of Baltimore, MD, use the glm function to fit a logistic regression with resolved vs unresolved as the outcome and victim age, sex and race as predictors. Save the output of glm as an R object; apply the broom::tidy to this object; and obtain the estimate and confidence interval of the adjusted odds ratio for solving homicides comparing male victims to female victims keeping all other variables fixed.
+* For the city of Baltimore, MD, use the glm function to fit a logistic regression with resolved vs unresolved as the outcome and victim age, sex and race as predictors. Save the output of glm as an R object; apply the broom::tidy to this object; and obtain the estimate and confidence interval of the adjusted odds ratio for solving homicides comparing male victims to female victims keeping all other variables fixed.
 
 ```{r}
-baltimore = homicide |>
-  filter(city == "Baltimore")
+baltimore = 
+  homicide_df %>% 
+  filter(city == "Baltimore") %>% 
+  mutate(victim_sex = as.factor(victim_sex),
+         victim_race = as.factor(victim_race),
+         solved = factor(solved, levels = c(0, 1)))
 
-model_baltimore = glm(solved ~ victim_age + victim_race + victim_sex,
-                      data = baltimore, family = binomial())
+baltimore_logit_model = 
+  glm(solved ~ victim_age + victim_race + victim_sex,
+      data = baltimore, 
+      family = binomial())
 
-model <- model_baltimore |>
-  broom::tidy() |>
+baltimore_model=
+  baltimore_logit_model %>% 
+  broom::tidy() %>% 
   knitr::kable(digits = 3)
-model
-save(model, file = "./Baltimore Logistic Regression.RData")
 
+baltimore_model
+save(baltimore_model, file = "./baltimore_logit_model")
+
+odd_ratio = baltimore_logit_model %>% 
+  broom::tidy() %>% 
+  filter(term == 'victim_sexMale') %>% 
+  summarise(estimate = estimate,
+            odd_ratio = exp(estimate),
+            odd_ratio_lower = exp(estimate - 1.96 * std.error),
+            odd_ratio_upper = exp(estimate + 1.96 * std.error)
+         ) %>% 
+  knitr::kable(digits = 3)
+
+odd_ratio
 
 ```
+* Run glm for each of the cities in your dataset, and extract the adjusted odds ratio (and CI) for solving homicides comparing male victims to female victims
+
+```{r}
+logit_model= 
+  homicide_df %>% 
+  nest(data = -city_state) %>% 
+  mutate(
+    logit_model = map(.x = data, ~glm(solved ~ victim_age + victim_race + victim_sex, data = .x, family = binomial())),
+    logit_results = map(logit_model, broom::tidy)
+    ) %>%
+  select(city_state, logit_results) %>% 
+  unnest(logit_results) %>% 
+  mutate(
+    OR = exp(estimate),
+    CI_lower = exp(estimate - 1.96 * std.error),
+    CI_upper = exp(estimate + 1.96 * std.error))
+
+logit_model
+```
+
+* Create a plot that shows the estimated ORs and CIs for each city. Organize cities according to estimated OR, and comment on the plot.
+
+```{r}
+logit_model %>% 
+  filter(term == "victim_sexMale") %>% 
+  mutate(city_state = fct_reorder(city_state, OR)) %>% 
+  ggplot(aes(x = city_state, y = OR)) +
+  geom_point() + 
+  geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper)) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+## Problem 2
+
+* Use 5000 bootstrap samples and, for each bootstrap sample, produce estimates of these two quantities. Plot the distribution of your estimates, and describe these in words. Using the 5000 bootstrap estimates, identify the 2.5% and 97.5% quantiles to provide a 95% confidence interval for r2 and log(β̂ 0∗β̂2)
+
+load data
+
+```{r}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2022-01-01",
+    date_max = "2022-12-31") |>
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) |>
+  select(name, id, everything())
+```
+
+```{r}
+bootstrap_estimates=
+  weather_df %>% 
+  modelr::bootstrap(n = 5000) %>% 
+  mutate(
+    weather_linear = map(strap, ~lm(tmax ~ tmin +prcp, data = .x)),
+    weather_tidy= map(weather_linear, broom::tidy),
+    weather_glance = map(weather_linear, broom::glance))%>%
+  unnest(weather_tidy,weather_glance) %>% 
+  select(term, estimate, r.squared) %>% 
+  pivot_wider(names_from = term, values_from = estimate)%>%
+  rename(
+    beta_0 = `(Intercept)`,
+    beta_1 = tmin,
+    beta_2 = prcp)
+
+result_bootstrap = 
+  bootstrap_estimates %>% 
+  mutate(r.squared = r.squared,
+         log_beta1_2 = log(beta_1 * beta_2)) %>%
+  na.omit()
+
+head(result_bootstrap)
+```
+
+#### Plot the distribution of estimates
+
+Plot the distribution of R_squared 
+
+```{r}
+result_bootstrap %>% 
+  ggplot(aes(x = r.squared)) + 
+  geom_density() +
+  labs(
+    title = "Distribution of Estimates R_square",
+    x = "R_square Estimates ",
+    y = "Density")
+```
+
+The distribution of r.squared is approximately normal with r.squared value about 0.92. Since r.squrred valus is close to 1, there is a strong linear relationship between maximum temperature and minimum temperature and precipitation as explanatory variables. Thereofore, using minimum temperature and precipitation can predict the maximum temperature well. 
+
+Plot the distribution of log(beta_1 * beta_2)
+
+```{r}
+result_bootstrap %>% 
+  ggplot(aes(x = log_beta1_2)) + 
+  geom_density() +
+  labs(
+    title = "Distribution of Estimates log(beta_1 * beta_2",
+    x = "log(beta_1 * beta_2) Estimates ",
+    y = "Density")
+```
+
+The distribution of log(beta_1 * beta_2)d is left-skewed with log(beta_1 * beta_2) value about -5.5. 
+
+* Using the 5000 bootstrap estimates, identify the 2.5% and 97.5% quantiles to provide a 95% confidence interval for r2 and log(β̂ 0∗β̂
+
+```{r}
+r_squared_CI = 
+  quantile(pull(result_bootstrap, r.squared),
+           probs = c(0.025,0.975)) %>%
+  knitr::kable(digits = 3, col.names = "R_squared")
+
+
+logbeta_1_2_CI = 
+  quantile(pull(result_bootstrap, log_beta1_2),
+           probs = c(0.025,0.975)) %>%
+  knitr::kable(digits = 3, col.names = "log(beta_1 * beta_2)")
+```
+
+## Problem 3
+
+* Load the data
+
+```{r}
+birthweight = read.csv("./birthweight.csv")
+```
+
+
 
