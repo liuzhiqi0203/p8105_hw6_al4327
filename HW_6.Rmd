@@ -76,6 +76,7 @@ odd_ratio = baltimore_logit_model %>%
 odd_ratio
 
 ```
+
 * Run glm for each of the cities in your dataset, and extract the adjusted odds ratio (and CI) for solving homicides comparing male victims to female victims
 
 ```{r}
@@ -112,9 +113,9 @@ logit_model %>%
 
 * Use 5000 bootstrap samples and, for each bootstrap sample, produce estimates of these two quantities. Plot the distribution of your estimates, and describe these in words. Using the 5000 bootstrap estimates, identify the 2.5% and 97.5% quantiles to provide a 95% confidence interval for r2 and log(β̂ 0∗β̂2)
 
-load data
 
 ```{r}
+# load data
 weather_df = 
   rnoaa::meteo_pull_monitors(
     c("USW00094728"),
@@ -129,6 +130,8 @@ weather_df =
 ```
 
 ```{r}
+# Bootstrap analysis
+
 bootstrap_estimates=
   weather_df %>% 
   modelr::bootstrap(n = 5000) %>% 
@@ -155,7 +158,7 @@ head(result_bootstrap)
 
 #### Plot the distribution of estimates
 
-Plot the distribution of R_squared 
+* Plot the distribution of R_squared 
 
 ```{r}
 result_bootstrap %>% 
@@ -169,7 +172,7 @@ result_bootstrap %>%
 
 The distribution of r.squared is approximately normal with r.squared value about 0.92. Since r.squrred valus is close to 1, there is a strong linear relationship between maximum temperature and minimum temperature and precipitation as explanatory variables. Thereofore, using minimum temperature and precipitation can predict the maximum temperature well. 
 
-Plot the distribution of log(beta_1 * beta_2)
+* Plot the distribution of log(beta_1 * beta_2)
 
 ```{r}
 result_bootstrap %>% 
@@ -189,22 +192,174 @@ The distribution of log(beta_1 * beta_2)d is left-skewed with log(beta_1 * beta_
 r_squared_CI = 
   quantile(pull(result_bootstrap, r.squared),
            probs = c(0.025,0.975)) %>%
-  knitr::kable(digits = 3, col.names = "R_squared")
+  knitr::kable(digits = 3, col.names = "r.squared")
+
+r_squared_CI
 
 
 logbeta_1_2_CI = 
   quantile(pull(result_bootstrap, log_beta1_2),
            probs = c(0.025,0.975)) %>%
-  knitr::kable(digits = 3, col.names = "log(beta_1 * beta_2)")
+  knitr::kable(digits = 3, col.names = "log(beta1*beta2)")
+
+logbeta_1_2_CI
 ```
 
 ## Problem 3
 
-* Load the data
+* Load and clean data
 
 ```{r}
-birthweight = read.csv("./birthweight.csv")
+birthweight = 
+  read.csv("./birthweight.csv") %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    babysex = as.factor(case_match(babysex, 
+                                   1 ~ "Male",
+                                   2 ~"Female")),
+    frace = as.factor(case_match(frace,
+                                 1 ~ "White",
+                                 2 ~ "Black",
+                                 3 ~ "Asian",
+                                 4 ~ "Puerto Rican",
+                                 8 ~ "Other",
+                                 9 ~ "Unknown")),
+    malform = as.factor(case_match(malform,
+                                   0 ~ "Absent",
+                                   1 ~ "Present")),
+    mrace = as.factor(case_match(mrace,
+                                 1 ~ "White",
+                                 2 ~ "Black",
+                                 3 ~ "Asian",
+                                 4 ~ "Puerto Rican",
+                                 8 ~ "Other",
+                                 9 ~ "Unknown")))
+
+head(birthweight)
 ```
 
+* check for missing data
 
+```{r}
+missing_data=
+  sapply(birthweight, function(x) sum(is.na(x)))
+missing_data
+```
+There is no missing data.
+
+```{r}
+skimr::skim(birthweight)
+```
+
+* Propose a regression model for birthweight. This model may be based on a hypothesized structure for the factors that underly birthweight, on a data-driven model-building process, or a combination of the two. Describe your modeling process and show a plot of model residuals against fitted values – use add_predictions and add_residuals in making this plot.
+
+* full model
+
+```{r}
+
+model_full=
+  lm(bwt ~ ., data = birthweight)
+
+summary(model_full)
+
+model_full %>%  
+  broom::tidy() %>% 
+  knitr::kable(digits = 3)
+```
+
+* proposed model
+
+```{r}
+model_chose=
+  lm(bwt ~ bhead + blength + delwt + gaweeks + smoken, data = birthweight)
+
+summary(model_chose)
+
+model_chose %>%  
+  broom::tidy() %>% 
+  knitr::kable(digits = 3)
+```
+
+For proposing a liner model for birthweight, I will use variables bhead, blength, delwt, gaweeks, and smoken to fit a model because of their statistically significant predictors based on their p-values. 
+
+* plot of model residuals against fitted values
+
+```{r}
+birthweight %>% 
+    add_predictions(model_chose) %>% 
+    add_residuals(model_chose) %>% 
+    ggplot(aes(x = pred, y = resid)) +
+    geom_point()  + 
+    geom_smooth(method = "lm") + 
+    labs(title = "Residuals vs Fitted Values", 
+       x = "Fitted Values", 
+       y = "Residuals")
+```
+
+From the plot, the residuals are spread around the line at zero, indicating linearity and homoscedasticity according to the model prediction. However, some data points are mot predicted well with this model. 
+
+
+* Compare your model to two others:
+One using length at birth and gestational age as predictors (main effects only)
+One using head circumference, length, sex, and all interactions (including the three-way interaction) between these
+
+```{r}
+model_1 = 
+  lm(bwt ~ blength + gaweeks, data = birthweight)
+
+model_1 %>% 
+  broom::tidy() %>% 
+  knitr::kable(digits = 3)
+
+model_2 = 
+  lm(bwt ~ bhead * blength * babysex, data = birthweight)
+
+model_2 %>% 
+  broom::tidy() %>% 
+  knitr::kable(digits = 3)
+```
+
+* Make this comparison in terms of the cross-validated prediction error; use crossv_mc and functions in purrr as appropriate.
+
+```{r}
+cv_data = 
+  birthweight %>% 
+  crossv_mc(n = 100)
+
+cv_df =
+  cv_data %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)) %>% 
+  mutate(
+    model_propose = map(train, ~model_chose),
+    mode_1= map(train, ~model_1),
+    mode_2= map(train, ~model_2)) %>% 
+  mutate(
+    rmse_propose = map2_dbl(model_propose, test, ~rmse(model = .x, data = .y)),
+    rmse_option1 = map2_dbl(mode_1, test, ~rmse(model = .x, data = .y)),
+    rmse_option2 = map2_dbl(mode_2, test,~rmse(model = .x, data = .y)))
+
+
+```
+
+* Fit the Root Mean Squared Error for three models
+
+```{r}
+cv_df %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_") %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = model, y = rmse)) + 
+  geom_boxplot() +
+  labs(title = "Prediction Error Distributions across Models", x = "Models", y = "Root Mean Square Error")  +
+  scale_x_discrete(labels = c("My Model", "Length + Gestational Age", "Interactions Model")) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+```
+
+After comparing models based on the cross-validated prediction error, the root mean squared error is the smallest for my proposed model. Therefore, model includes variables bhead, blength, delwt, gaweeks,  and smoken to fit the data the best among these three models. 
 
